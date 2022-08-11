@@ -27,6 +27,7 @@ class Encoder(nn.Module):
         :param int n_nodes: Number of nodes in the TSP
         """
         super(Encoder, self).__init__()
+
         self.n_rnn_layers = n_rnn_layers
         self.hidden_dim = hidden_dim
         self.n_nodes = n_nodes
@@ -232,8 +233,11 @@ class Decoder(nn.Module):
                          1/math.sqrt(hidden_dim))
 
     def forward(self, q, ref, inp, actions=None, g_emb=None, q_star=None):
+        '''
+        @param q: query
+        '''
 
-        batch_size = ref.size(0)
+        batch_size = ref.size(0)    # sample number in batch
         n_nodes = ref.size(1)
 
         if g_emb is not None:
@@ -376,9 +380,9 @@ class ActorCriticNetwork(nn.Module):
         self.W_s = nn.Linear(hidden_dim, hidden_dim//2)
 
         self.decoder_c = nn.Sequential(
-                         nn.Linear(hidden_dim, hidden_dim),
-                         nn.ReLU(),
-                         nn.Linear(hidden_dim, 1))
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1))
         self.graph_ref = graph_ref
 
     def forward(self, inputs, inputs_star, hidden=None, actions=None):

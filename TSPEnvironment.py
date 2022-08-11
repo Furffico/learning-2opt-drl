@@ -1,6 +1,8 @@
+from typing import List
 import utils
 import numpy as np
 from TSPGraph import TSPGraph
+import torch
 
 
 class TSPInstanceEnv():
@@ -15,19 +17,18 @@ class TSPInstanceEnv():
         :param torch tensor points: points in 2D shape (seq_len, 2)
         :param int nof_points: seq_len
         """
-        super(TSPInstanceEnv, self).__init__()
-
         self.visualization = None
         self.observation_space = None
         self.action_space = None
 
-    def reset(self, points, tour, T=None):
+    def reset(self, points: torch.Tensor, tour: List[int], T=None):
         """
         Reset the TSP Environment
         """
         self.T = T
         self.points = points
-        self.state = np.copy(self.points)
+        self.state = points.clone()  # np.copy(self.points)
+
         # set the current step to 0
         self.current_step = 0
         self.n_bad_actions = 0
@@ -40,23 +41,20 @@ class TSPInstanceEnv():
         self.tour = tour
         # reset_tour: list with the initial tour of points
         self.reset_tour = self.tour.copy()
-
+        
         # distances: list of lists with all distances for points
-        self.distances = utils.calculate_distances(self.state)
-        self.distances = np.rint(self.distances*10000)
-        self.distances = self.distances.astype(int)
+        self.distances = torch.round(utils.calculate_distances(self.state)*10000).type(torch.int).to(points.device)
 
         # state: reorder the points with the random tour before starting
         # this is the initial state
         self.state = self.state[self.tour, :]
-        self.best_state = np.copy(self.state)
+        self.best_state = self.state.clone()
         # keep_tours: tour for computing distances (invariant to state)
         self.keep_tour = self.tour.copy()
 
         # tour_distance: distance of the current tour
-        self.tour_distance = utils.route_distance(self.keep_tour,
-                                                  self.distances)
-
+        self.tour_distance = utils.route_distance(self.keep_tour, self.distances)
+        
         # current best: save the initial tour (keep_tour) and distance
         self.current_best_distance = self.tour_distance
         self.current_best_tour = self.keep_tour.copy()
@@ -67,7 +65,7 @@ class TSPInstanceEnv():
         # update memory
         self.hist_best_distance.append(self.current_best_distance)
         self.hist_current_distance.append(self.tour_distance)
-
+        
         return self._next_observation(), self.best_state
 
     def _next_observation(self):
@@ -83,13 +81,11 @@ class TSPInstanceEnv():
         :param torch tensor action: int (a,b) shape: (1, 2)
         """
         self.current_step += 1
-
         reward = self._take_action(action)
         observation = self._next_observation()
         done = False  # only stop by number of actions
         if self.T is not None:
             self.T -= 1
-
         return observation, reward, done, self.best_state
 
     def _take_action(self, action):
@@ -98,39 +94,32 @@ class TSPInstanceEnv():
         :param torch.tensor action: indices (i, j) where i <= j shape: (1, 2)
         """
         # tour: new reset tour after a 2opt move
-        self.tour = utils.swap_2opt(self.tour,
-                                    action[0],
-                                    action[1])
+        self.tour = utils.swap_2opt(self.tour, action[0], action[1])
 
         # keep_tour: same 2opt move on keep_tour to keep history
-        self.new_keep_tour, self.new_tour_distance = utils.swap_2opt_new(self.keep_tour,
-                                                              action[0],
-                                                              action[1],
-                                                              self.tour_distance,
-                                                              self.distances)
-
+        self.keep_tour, self.tour_distance = utils.swap_2opt_new(self.keep_tour,
+                                                                action[0],
+                                                                action[1],
+                                                                self.tour_distance,
+                                                                self.distances)
         self.state = self.state[self.tour, :]
-        self.tour_distance = self.new_tour_distance.copy()
-        if (self.current_best_distance > self.tour_distance):
+        if self.current_best_distance > self.tour_distance:
             reward = self.current_best_distance - self.tour_distance
             reward = round(min(reward/10000, 1.0), 4)
             self.current_best_distance = self.tour_distance
-            self.current_best_tour = self.new_keep_tour.copy()
-            self.best_state = np.copy(self.state)
-
+            self.current_best_tour = self.keep_tour.copy()
+            self.best_state = self.state.clone()
         else:
             reward = 0.0
 
         # update memory
         self.hist_current_distance.append(self.tour_distance)
         self.hist_best_distance.append(self.current_best_distance)
-        self.keep_tour = self.new_keep_tour.copy()
 
         # before going to the next state tour gets reset
         self.tour = self.reset_tour.copy()
 
         return reward
-
 
     def _render_to_file(self, filename='render.txt'):
         """
@@ -179,8 +168,8 @@ class TSPInstanceEnv():
 
 
 class VecEnv():
-
-    def __init__(self, env, n_envs, n_nodes, T=None):
+    # A vector of environments
+    def __init__(self, env: type, n_envs: int, n_nodes: int, T = None):
         self.n_envs = n_envs
         self.env = env
         self.n_nodes = n_nodes
@@ -188,53 +177,39 @@ class VecEnv():
         self.T = T
 
     def create_envs(self):
+        self.envs: List[TSPInstanceEnv] = [self.env() for _ in range(self.n_envs)]
 
-        self.envs = []
-        for i in range(self.n_envs):
-            self.envs.append(self.env())
-
-    def reset(self, points, T=None):
+    def reset(self, points: List[torch.Tensor], T=None):
         self.create_envs()
-        observations = np.ndarray((self.n_envs, self.n_nodes, 2))
-        best_observations = np.ndarray((self.n_envs, self.n_nodes, 2))
-        self.best_distances = np.ndarray((self.n_envs, 1))
-        self.distances = np.ndarray((self.n_envs, 1))
+        observations = torch.zeros((self.n_envs, self.n_nodes, 2))
+        best_observations = torch.zeros((self.n_envs, self.n_nodes, 2))
+        self.best_distances = torch.zeros((self.n_envs, 1))
+        self.distances = torch.zeros((self.n_envs, 1))
 
-        tour = [x for x in range(self.n_nodes)]
-        idx = 0
-        for env in self.envs:
-            observations[idx], best_observations[idx] = env.reset(points[idx],
-                                                                  tour,
-                                                                  T)
+        tour = list(range(self.n_nodes)) # 初始路径为节点序号的顺序排列
+        for idx, env in enumerate(self.envs):
+            observations[idx], best_observations[idx] = env.reset(points[idx], tour, T)
             self.best_distances[idx] = env.current_best_distance
             self.distances[idx] = env.tour_distance
-            idx += 1
 
         self.current_step = 0
 
-        return observations, self.best_distances.copy(), best_observations
+        return observations, self.best_distances.clone(), best_observations
 
     def step(self, actions):
-
-        observations = np.ndarray((self.n_envs, self.n_nodes, 2))
-        best_observations = np.ndarray((self.n_envs, self.n_nodes, 2))
-        rewards = np.ndarray((self.n_envs, 1))
+        observations = torch.zeros((self.n_envs, self.n_nodes, 2))
+        best_observations = torch.zeros((self.n_envs, self.n_nodes, 2))
+        rewards = torch.zeros((self.n_envs, 1))
         dones = np.ndarray((self.n_envs, 1), dtype=bool)
 
-        idx = 0
-        for env in self.envs:
-            obs, reward, done, best_obs = env.step(actions[idx])
+        for idx, env in enumerate(self.envs):
+            observations[idx], rewards[idx], dones[idx], best_observations[idx] = env.step(actions[idx])
             self.best_distances[idx] = env.current_best_distance
             self.distances[idx] = env.tour_distance
-            observations[idx] = obs
-            best_observations[idx] = best_obs
-            rewards[idx] = reward
-            dones[idx] = done
-            idx += 1
 
         self.current_step += 1
         return observations, rewards, dones, \
-            self.best_distances.copy(), self.distances.copy(), \
+            self.best_distances.clone(), self.distances.clone(), \
             best_observations
 
     def render(self, mode='live', window_size=1, time=0, **kwargs):

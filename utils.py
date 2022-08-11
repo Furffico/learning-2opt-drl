@@ -1,10 +1,10 @@
+from typing import List, Union
 import numpy as np
 import itertools
 import random
 import torch
 # import math
 import matplotlib.pyplot as plt
-from scipy.spatial import distance_matrix
 
 def tsp_opt(points):
     """
@@ -113,10 +113,12 @@ def calculate_distances(positions):
     #     return np.linalg.norm(np.asarray(x) - np.asarray(y))
     # distances = [[length(x, y) for y in positions] for x in positions]
 
-    distances = distance_matrix(positions, positions)
-    return distances
+    dist=[]
+    for point in positions:
+        dist.append(((positions-point)**2).sum(axis=1))
+    return torch.vstack(dist) if isinstance(positions,torch.Tensor) else np.vstack(dist)
 
-def route_distance(tour, distances):
+def route_distance(tour: List[int], distances: Union[List[List[int]], torch.Tensor, np.ndarray]) -> int:
     """
     Calculate a tour distance (including 0)
 
@@ -127,9 +129,9 @@ def route_distance(tour, distances):
     dist = 0
     prev = tour[-1]
     for node in tour:
-        dist += distances[int(prev)][int(node)]
+        dist += distances[prev][node]
         prev = node
-    return dist
+    return dist.item()
 
 
 def swap_2opt(tour, i, k):
@@ -140,22 +142,23 @@ def swap_2opt(tour, i, k):
     :param int i: First index for the swap
     :param int j: Second index for the swap
     """
-    # assert tour[0] == 0 and tour[-1] != 0
     if k <= i:
-        i_a = i
-        i = k
-        k = i_a
-    assert i >= 0 and i < (len(tour) - 1)
-    assert k >= i and k < len(tour)
-    new_tour = tour[0:i]
-    new_tour = np.append(new_tour, np.flip(tour[i:k + 1], axis=0))
-    new_tour = np.append(new_tour, tour[k+1:])
-    # assert len(new_tour) == len(tour)
-    new_tour = [int(i) for i in new_tour]
-    return list(new_tour)
+        k, i = i, k
+    assert i >= 0 and i <= k and k < len(tour)
+    if i==0:
+        return tour[k::-1] + tour[k+1::]
+    else:
+        return tour[:i] + tour[k:i-1:-1] + tour[k+1::]
 
 
-def swap_2opt_(tour, i, k, tour_distance, distances):
+class AuxTour():
+    def __init__(self,tour: List[int]):
+        self.tour=tour
+    
+    def __getitem__(self, i: int):
+        return self.tour[i%len(self.tour)]
+
+def swap_2opt_(tour, i, k, tour_distance, distances) -> tuple[List[int],int]:
     """
     Swaps two edges by reversing a section of nodes
 
@@ -163,91 +166,22 @@ def swap_2opt_(tour, i, k, tour_distance, distances):
     :param int i: First index for the swap
     :param int j: Second index for the swap
     """
-    # assert tour[0] == 0 and tour[-1] != 0
     if k <= i:
-        i_a = i
-        i = k
-        k = i_a
-    assert i >= 0 and i < (len(tour) - 1)
-    assert k >= i and k < len(tour)
+        k, i = i, k
+    assert i >= 0 and i <= k and k < len(tour)
 
     distance = tour_distance
 
-    aux_tour = tour.copy()
-    aux_tour.append(tour[0])
-    aux_tour.insert(0, tour[-1])
+    aux_tour = AuxTour(tour)
+    distance -= distances[aux_tour[i-1]][aux_tour[i]] + distances[aux_tour[k]][aux_tour[k+1]]
 
-    distance = distance - (distances[aux_tour[i]][aux_tour[i+1]]
-                           + distances[aux_tour[k+1]][aux_tour[k+2]])
+    new_tour = swap_2opt(tour, i, k)
+    aux_new_tour = AuxTour(new_tour)
+    distance += distances[aux_new_tour[i-1]][aux_new_tour[i]] + distances[aux_new_tour[k]][aux_new_tour[k+1]]
 
-    new_tour = tour[0:i]
-    new_tour = np.append(new_tour, np.flip(tour[i:k + 1], axis=0))
-    new_tour = np.append(new_tour, tour[k+1:])
-    # assert len(new_tour) == len(tour)
-    # new_tour = [int(i) for i in new_tour]
-    new_tour = new_tour.astype(int).tolist()
+    return new_tour, distance.item()
 
-    aux_new_tour = new_tour.copy()
-    aux_new_tour.append(new_tour[0])
-    aux_new_tour.insert(0, new_tour[-1])
-
-    distance = distance + (distances[aux_new_tour[i]][aux_new_tour[i+1]]
-                           + distances[aux_new_tour[k+1]][aux_new_tour[k+2]])
-
-    return new_tour, distance
-
-
-def swap_2opt_new(tour, i, k, tour_distance, D):
-    """
-    Swaps two edges by reversing a section of nodes
-
-    :param list tour: TSP tour
-    :param int i: First index for the swap
-    :param int j: Second index for the swap
-    """
-    # assert tour[0] == 0 and tour[-1] != 0
-    if k <= i:
-        i_a = i
-        i = k
-        k = i_a
-    assert i >= 0 and i < (len(tour) - 1)
-    assert k >= i and k < len(tour)
-
-    distance = tour_distance
-    # print("tour distance before 2 opt", distance)
-
-    if i > 0:
-        pred_i = i-1
-    else:
-        pred_i = len(tour)-1
-
-    if k < len(tour)-1:
-        suc_k = k+1
-    else:
-        suc_k = 0
-    # print(pred_i)
-    # print(suc_k)
-
-    remove = D[tour[pred_i]][tour[i]] + D[tour[k]][tour[suc_k]]
-
-
-    # print("remove", remove)
-
-    distance -= remove
-
-
-    new_tour = tour[0:i]
-    new_tour = np.append(new_tour, np.flip(tour[i:k + 1], axis=0))
-    new_tour = np.append(new_tour, tour[k+1:])
-    new_tour = new_tour.astype(int).tolist()
-
-    add = D[new_tour[pred_i]][new_tour[i]] + D[new_tour[k]][new_tour[suc_k]]
-    # print("add", add)
-    distance += add
-    # print("tour distance after 2 opt", distance)
-    return new_tour, distance
-
-
+swap_2opt_new = swap_2opt_
 
 
 # points = np.random.random((10, 2))
@@ -418,7 +352,6 @@ class AverageMeter(object):
         self.name = name
 
     def reset(self):
-
         self.val = 0
         self.avg = 0
         self.sum = 0
@@ -429,7 +362,6 @@ class AverageMeter(object):
         self.reset_history()
 
     def reset_history(self):
-
         self.hist = {"val": [],
                      "avg": [],
                      "sum": [],
@@ -439,7 +371,6 @@ class AverageMeter(object):
                      "max": []}
 
     def update(self, val, n=1, rate=0.1):
-
         self.val = val
         self.sum += val * n
         self.count += n
@@ -465,7 +396,6 @@ class AverageMeter(object):
         self.hist["max"].append(self.max)
 
     def log(self, logger):
-
         if self.name not in logger.keys():
             logger[self.name] = self.hist
         else:
@@ -474,6 +404,24 @@ class AverageMeter(object):
 
         self.reset_history()
 
+class BatchAverageMeter():
+    def __init__(self,names):
+        self.am={k:AverageMeter(k) for k in names}
+    
+    def __getitem__(self,name):
+        return self.am[name]
+    
+    def logto(self, logger: dict):
+        for v in self.am.values():
+            v.log(logger)
+    
+    def reset(self):
+        for v in self.am.values():
+            v.reset()
+    
+    def batchupdate(self, n=1, rate=0.1,**params):
+        for k,v in params.items():
+            self.am[k].update(v, n, rate)
 
 def run_2opt_policy_bi(positions, return_first=True):
     """
