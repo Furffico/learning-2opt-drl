@@ -12,6 +12,7 @@ from ActorCriticNetwork import ActorCriticNetwork
 from DataGenerator import TSPDataset
 from TSPEnvironment import TSPInstanceEnv, VecEnv
 import colorama
+from tqdm import tqdm
 
 
 def argparser():
@@ -23,7 +24,7 @@ def argparser():
     parser.add_argument('--test_size',
                         default=256, type=int, help='Test data size')
     parser.add_argument('--test_from_data',
-                        default=True, action='store_true', help='Test data size')
+                        default=False, action='store_true', help='Test data size')
     parser.add_argument('--batch_size',
                         default=512, type=int, help='Batch size')
     parser.add_argument('--n_points',
@@ -34,7 +35,7 @@ def argparser():
                         default=200,
                         type=int, help='Number of steps in each episode')
     parser.add_argument('--n',
-                        default=8,
+                        default=30,
                         type=int, help='Number of steps to bootstrap')
     parser.add_argument('--gamma',
                         default=0.99,
@@ -46,7 +47,7 @@ def argparser():
                         default=0,
                         type=int, help='Epoch to start rendering')
     parser.add_argument('--update_value',
-                        default=False,
+                        default=True,
                         action='store_true',
                         help='Use the value function for TD updates')
     parser.add_argument('--epochs',
@@ -136,6 +137,7 @@ if args.gpu and torch.cuda.is_available():
 else:
     USE_CUDA = False
     device = torch.device("cpu")
+torch.autograd.set_detect_anomaly(True)
 
 # * Initiate the logs *
 if args.tensorboard:
@@ -278,12 +280,6 @@ def training(policy, dataloader):
     epoch_best_distances = []
     buffer = Buffer()
 
-    # TSP 20
-    if epoch == 100:
-        args.n = 10
-    elif epoch == 150:
-        args.n = 20
-
     for batch_idx, batch_sample in enumerate(dataloader):
         t = 0
         b_sample: torch.Tensor = batch_sample.to(device)
@@ -332,8 +328,8 @@ def training(policy, dataloader):
         train_entropy_loss=epoch_bam['train_entropy_loss'].avg, 
         train_value_loss=epoch_bam['train_value_loss'].avg, 
         train_loss=epoch_bam['train_loss'].avg,
-        train_reward=epoch_reward, 
-        train_init_dist=epoch_initial_distance, 
+        train_reward=epoch_reward,
+        train_init_dist=epoch_initial_distance,
         train_best_dist=epoch_best_distance)
     batchwrite_scalar(epoch, 
         Rewards_Training=epoch_reward,
@@ -395,7 +391,7 @@ policy = ActorCriticNetwork(
 
 if args.load_path != '':
     print('  [*] Loading model from {}'.format(args.load_path))
-    policy.load_state_dict(torch.load(os.path.join(os.getcwd(), args.load_path))['policy'])
+    policy.load_state_dict(torch.load(os.path.join(os.getcwd(), args.load_path))['policy'], strict=False)
 
 if USE_CUDA:
     policy.cuda()
@@ -405,8 +401,7 @@ if USE_CUDA:
 
 # * define the optimizer and scheduler *
 if args.rms_prop:
-    optimizer = RMSprop(policy.parameters(),
-                        lr=args.lr, weight_decay=args.wd)
+    optimizer = RMSprop(policy.parameters(), lr=args.lr, weight_decay=args.wd)
 else:
     optimizer = Adam(policy.parameters(),
                         lr=args.lr,
@@ -419,8 +414,7 @@ if args.test_from_data:
     test_data = TSPDataset(dataset_fname=os.path.join(args.data_dir, f'TSP{args.n_points}-data.json'),
                             num_samples=args.test_size)
 else:
-    test_data = TSPDataset(
-        dataset_fname=None, size=args.n_points, num_samples=args.test_size)
+    test_data = TSPDataset(dataset_fname=None, size=args.n_points, num_samples=args.test_size)
 
 test_loader = DataLoader(test_data, batch_size=args.test_size, shuffle=False)
 
@@ -441,7 +435,7 @@ for epoch in range(args.epochs):
         batchwrite_scalar(epoch, Gap_Testing=gap)
         
     if bam['val_reward'].exp_avg > best_running_reward \
-            or bam['val_best_dist'].val < val_best_dist\
+            or bam['val_best_dist'].val < val_best_dist \
             or (args.test_from_data and gap < best_gap):
 
         print('\033[1;37;40m Saving model...\033[0m')
@@ -461,7 +455,8 @@ for epoch in range(args.epochs):
                                         .format(str(id), args.n_points, epoch)))
         best_running_reward = bam['val_reward'].exp_avg
         val_best_dist = bam['val_best_dist'].val
-        best_gap = gap
+        if args.test_from_data:
+            best_gap = gap
 
     if epoch % args.log_interval == 0:
         bam.logto(log)
